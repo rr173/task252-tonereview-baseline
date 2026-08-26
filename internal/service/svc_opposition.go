@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+
 	"task252-tonereview/internal/adjudicate"
 	"task252-tonereview/internal/compare"
 	"task252-tonereview/internal/model"
@@ -70,6 +72,11 @@ func (s *Service) AddEvidence(oppID, segmentID, side string) error {
 	}
 	if side == "b" && seg.LexicalItem != o.LexicalB {
 		return model.ErrBadRequest
+	}
+	// 只有可用录音可生成对立证据：噪声/排除（已否决）或待校验（未完成校验）
+	// 的片段一律拒绝。校验须先于任何证据改动，使失败时不删旧证据、不新增证据。
+	if seg.Status != model.SegUsable {
+		return fmt.Errorf("%w: segment %s not usable (status=%s)", model.ErrInvalidState, seg.ID, seg.Status)
 	}
 	curve, err := s.contourForSegment(segmentID, resampleN)
 	if err != nil {

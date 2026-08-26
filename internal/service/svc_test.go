@@ -1,9 +1,11 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"task252-tonereview/internal/capture"
+	"task252-tonereview/internal/model"
 	"task252-tonereview/internal/store"
 )
 
@@ -178,5 +180,55 @@ func TestOppositionRejectsEqualLexemes(t *testing.T) {
 	batch, _ := svc.CreateBatch("b", "t")
 	if _, err := svc.CreateOpposition(batch.ID, "ma", "ma", "ma"); err == nil {
 		t.Fatalf("expected rejection of identical lexemes")
+	}
+}
+
+// TestAddEvidenceRejectsNonUsableSegment 锁定：只有可用录音可生成对立证据；
+// 噪声/排除（已否决）或待校验（未完成校验）的片段一律拒绝，且失败时不新增证据。
+func TestAddEvidenceRejectsNonUsableSegment(t *testing.T) {
+	cases := []struct {
+		name   string
+		action func(svc *Service, segID string) error // 在导入后把片段移到非可用态
+	}{
+		{"noise", func(svc *Service, segID string) error { return svc.MarkNoise(segID) }},
+		{"excluded", func(svc *Service, segID string) error { return svc.ExcludeSegment(segID) }},
+		{"pending", func(svc *Service, segID string) error { return nil /* 不调用 Verify 即仍待校验 */ }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, _ := store.Open(":memory:")
+			defer st.Close()
+			svc := New(st)
+			sp, _ := svc.CreateSpeaker("sp", "d", "f", 1950)
+			batch, _ := svc.CreateBatch("b", "t")
+			seg, _ := svc.ImportSegment(batch.ID, segInputFor("ma", sp.ID, "fp-"+tc.name, 200, 200))
+			if tc.action != nil {
+				if err := tc.action(svc, seg.ID); err != nil {
+					t.Fatalf("seed state: %v", err)
+				}
+			}
+			// 说话人需有基线才能走完 contourForSegment；用另一可用片段喂基线。
+			base, _ := svc.ImportSegment(batch.ID, segInputFor("ma", sp.ID, "fp-base", 200, 200))
+			_ = svc.VerifySegment(base.ID)
+			_ = svc.RecomputeBaseline(sp.ID)
+
+			opp, _ := svc.CreateOpposition(batch.ID, "ma", "ma", "mb")
+			// 构造一个合法的 B 侧可用片段以便先把对立置于有证据的状态。
+			segB, _ := svc.ImportSegment(batch.ID, segInputFor("mb", sp.ID, "fp-b-"+tc.name, 150, 220))
+			_ = svc.VerifySegment(segB.ID)
+			if err := svc.AddEvidence(opp.ID, segB.ID, "b"); err != nil {
+				t.Fatalf("seed evidence b: %v", err)
+			}
+			before, _ := st.EvidenceCount(opp.ID)
+
+			err := svc.AddEvidence(opp.ID, seg.ID, "a")
+			if !errors.Is(err, model.ErrInvalidState) {
+				t.Fatalf("expected ErrInvalidState for %s segment, got %v", tc.name, err)
+			}
+			after, _ := st.EvidenceCount(opp.ID)
+			if after != before {
+				t.Fatalf("evidence must not change on failure: before=%d after=%d", before, after)
+			}
+		})
 	}
 }
