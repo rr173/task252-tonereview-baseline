@@ -180,3 +180,100 @@ func TestOppositionRejectsEqualLexemes(t *testing.T) {
 		t.Fatalf("expected rejection of identical lexemes")
 	}
 }
+
+// TestAddEvidenceRejectsMismatchedSegment 验证证据片段必须与对立同属一个批次、
+// 同一音段，且词条与所选侧一致；不匹配时拒绝新增且不删除既有证据。
+func TestAddEvidenceRejectsMismatchedSegment(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	svc := New(st)
+
+	sp, err := svc.CreateSpeaker("spk-X", "dialect-X", "f", 1950)
+	if err != nil {
+		t.Fatalf("speaker: %v", err)
+	}
+	// 当前对立所在批次与另一批次（同音段录音）。
+	b1, err := svc.CreateBatch("b1", "对立批次")
+	if err != nil {
+		t.Fatalf("batch1: %v", err)
+	}
+	b2, err := svc.CreateBatch("b2", "另一批次")
+	if err != nil {
+		t.Fatalf("batch2: %v", err)
+	}
+
+	// b1：对立两侧词条（ma-high / ma-rising，音段 ma）。
+	segA1, err := svc.ImportSegment(b1.ID, segInputFor("ma-high", sp.ID, "fp-a1", 200, 200))
+	if err != nil {
+		t.Fatalf("import a1: %v", err)
+	}
+	segB1, err := svc.ImportSegment(b1.ID, segInputFor("ma-rising", sp.ID, "fp-b1", 150, 220))
+	if err != nil {
+		t.Fatalf("import b1: %v", err)
+	}
+	// b2：另一批次的同音段录音（ma-high，音段同为 ma）。
+	segOtherBatch, err := svc.ImportSegment(b2.ID, segInputFor("ma-high", sp.ID, "fp-x1", 205, 195))
+	if err != nil {
+		t.Fatalf("import x1: %v", err)
+	}
+	// b1 内但音段不同（pa）的片段。
+	paPts := make([]capture.F0Point, 8)
+	for i := 0; i < 8; i++ {
+		paPts[i] = capture.F0Point{TMs: int64(i) * 50, F0Hz: 200}
+	}
+	segOtherSeg, err := svc.ImportSegment(b1.ID, capture.SegmentInput{
+		LexicalItem: "pa-high", PhoneticSeg: "pa", SpeakerID: sp.ID, AudioFP: "fp-pa",
+		DurationMs: 400, RecordedAt: 1, F0: paPts,
+	})
+	if err != nil {
+		t.Fatalf("import pa: %v", err)
+	}
+
+	for _, id := range []string{segA1.ID, segB1.ID, segOtherBatch.ID, segOtherSeg.ID} {
+		if err := svc.VerifySegment(id); err != nil {
+			t.Fatalf("verify %s: %v", id, err)
+		}
+	}
+	if err := svc.RecomputeBaseline(sp.ID); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+
+	opp, err := svc.CreateOpposition(b1.ID, "ma-high", "ma", "ma-rising")
+	if err != nil {
+		t.Fatalf("opp: %v", err)
+	}
+
+	// 合法：b1 内 ma-high 加入 a 侧。
+	if err := svc.AddEvidence(opp.ID, segA1.ID, "a"); err != nil {
+		t.Fatalf("valid a-side evidence: %v", err)
+	}
+
+	// 跨批次材料应被拒绝（另一批次的同音段录音）。
+	if err := svc.AddEvidence(opp.ID, segOtherBatch.ID, "a"); err == nil {
+		t.Fatal("expected rejection of cross-batch evidence")
+	}
+	// 音段不一致应被拒绝。
+	if err := svc.AddEvidence(opp.ID, segOtherSeg.ID, "a"); err == nil {
+		t.Fatal("expected rejection of mismatched phonetic seg")
+	}
+	// 词条与所选侧不一致应被拒绝（ma-rising 加入 a 侧）。
+	if err := svc.AddEvidence(opp.ID, segB1.ID, "a"); err == nil {
+		t.Fatal("expected rejection of lexical/side mismatch")
+	}
+
+	// 失败不应新增、也不应删除既有证据：簇中仍只有 1 条。
+	if n, _ := svc.Store().EvidenceCount(opp.ID); n != 1 {
+		t.Fatalf("expected 1 evidence after rejections, got %d", n)
+	}
+
+	// 同一片段加入正确侧（b）应成功，证明拒绝未破坏簇。
+	if err := svc.AddEvidence(opp.ID, segB1.ID, "b"); err != nil {
+		t.Fatalf("valid b-side evidence: %v", err)
+	}
+	if n, _ := svc.Store().EvidenceCount(opp.ID); n != 2 {
+		t.Fatalf("expected 2 evidence after valid b-side add, got %d", n)
+	}
+}

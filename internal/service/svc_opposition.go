@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+
 	"task252-tonereview/internal/adjudicate"
 	"task252-tonereview/internal/compare"
 	"task252-tonereview/internal/model"
@@ -61,6 +63,16 @@ func (s *Service) AddEvidence(oppID, segmentID, side string) error {
 	seg, err := s.store.GetSegment(segmentID)
 	if err != nil {
 		return err
+	}
+	// 一致性校验：证据片段必须与对立同属一个批次、同一音段，
+	// 且词条与所选侧一致，防止跨批次材料混入证据簇。
+	// 失败时直接拒绝，不做任何删除或新增。
+	wantLexical := o.LexicalA
+	if side == "b" {
+		wantLexical = o.LexicalB
+	}
+	if seg.BatchID != o.BatchID || seg.PhoneticSeg != o.PhoneticSeg || seg.LexicalItem != wantLexical {
+		return fmt.Errorf("%w: evidence segment does not match opposition (batch/segment/lexical)", model.ErrBadRequest)
 	}
 	curve, err := s.contourForSegment(segmentID, resampleN)
 	if err != nil {
