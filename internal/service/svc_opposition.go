@@ -75,18 +75,11 @@ func (s *Service) AddEvidence(oppID, segmentID, side string) error {
 	if err != nil {
 		return err
 	}
-	// 去重：删除同一对立/片段/侧的旧证据。
-	evs, err := s.store.ListEvidence(oppID)
-	if err != nil {
+	// 去重（幂等）：只替换目标片段在目标侧的旧证据，同一对立中其他录音证据保持不变。
+	// DeleteEvidence 按 对立/片段/侧 精确删除，对不存在行幂等；
+	// 重复提交同一片段同一侧时先删后插，簇内净数量与得分不变。
+	if err := s.store.DeleteEvidence(oppID, segmentID, side); err != nil {
 		return err
-	}
-	for _, e := range evs {
-		if e.SegmentID == segmentID && e.Side == side {
-			if err := s.store.DeleteEvidenceForOpposition(oppID); err != nil {
-				return err
-			}
-			break
-		}
 	}
 	cj := compare.ContourJSON{
 		SegmentID: segmentID,
