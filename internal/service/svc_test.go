@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"task252-tonereview/internal/capture"
+	"task252-tonereview/internal/model"
 	"task252-tonereview/internal/store"
 )
 
@@ -178,5 +179,56 @@ func TestOppositionRejectsEqualLexemes(t *testing.T) {
 	batch, _ := svc.CreateBatch("b", "t")
 	if _, err := svc.CreateOpposition(batch.ID, "ma", "ma", "ma"); err == nil {
 		t.Fatalf("expected rejection of identical lexemes")
+	}
+}
+
+// TestCreateVersionRequiresPublishedBatch 锁定：只有已发布批次才能创建分析版本，
+// 否则不得新增任何版本记录。
+func TestCreateVersionRequiresPublishedBatch(t *testing.T) {
+	st, _ := store.Open(":memory:")
+	defer st.Close()
+	svc := New(st)
+	sp, _ := svc.CreateSpeaker("sp", "d", "f", 1950)
+
+	// 收集态批次：直接创建版本必须被拒。
+	batch, err := svc.CreateBatch("b-collect", "t")
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if _, err := svc.CreateVersion(batch.ID, "草稿"); err == nil {
+		t.Fatalf("expected collecting batch to reject version creation")
+	}
+	if vers, _ := svc.ListVersions(batch.ID); len(vers) != 0 {
+		t.Fatalf("collecting batch must not record a version, got %d", len(vers))
+	}
+
+	// 转入待复核态后依然不得创建。
+	if err := svc.StartReview(batch.ID); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if _, err := svc.CreateVersion(batch.ID, "草稿"); err == nil {
+		t.Fatalf("expected reviewing batch to reject version creation")
+	}
+	if vers, _ := svc.ListVersions(batch.ID); len(vers) != 0 {
+		t.Fatalf("reviewing batch must not record a version, got %d", len(vers))
+	}
+
+	// 发布后即可正常创建版本。
+	seg, _ := svc.ImportSegment(batch.ID, segInput(sp.ID, "fp1", 200, 200))
+	if err := svc.VerifySegment(seg.ID); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if err := svc.PublishBatch(batch.ID); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	ver, err := svc.CreateVersion(batch.ID, "首版")
+	if err != nil {
+		t.Fatalf("published batch should allow version creation: %v", err)
+	}
+	if ver.Status != model.VerDraft {
+		t.Fatalf("expected draft version, got %s", ver.Status)
+	}
+	if vers, _ := svc.ListVersions(batch.ID); len(vers) != 1 {
+		t.Fatalf("published batch should record one version, got %d", len(vers))
 	}
 }

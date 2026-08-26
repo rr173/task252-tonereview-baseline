@@ -8,9 +8,15 @@ import (
 )
 
 // CreateVersion 为批次创建分析版本草稿。
+// 只有已发布批次才能创建分析版本，避免在尚未完成复核基础的批次上
+// 产生版本链。
 func (s *Service) CreateVersion(batchID, note string) (*model.AnalysisVersion, error) {
-	if _, err := s.store.GetBatch(batchID); err != nil {
+	b, err := s.store.GetBatch(batchID)
+	if err != nil {
 		return nil, err
+	}
+	if b.Status != model.BatchPublished {
+		return nil, model.ErrInvalidState
 	}
 	v, err := s.store.NextVersion(batchID)
 	if err != nil {
