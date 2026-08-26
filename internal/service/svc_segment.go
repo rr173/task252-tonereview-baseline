@@ -109,7 +109,23 @@ func (s *Service) transitionSegment(id, to string) error {
 	if !ok {
 		return model.ErrInvalidState
 	}
-	return s.store.UpdateSegmentStatus(id, to)
+	if err := s.store.UpdateSegmentStatus(id, to); err != nil {
+		return err
+	}
+	// 转为可用时：说话人已有可信基线则立即完成调型分类，
+	// 否则保留 unknown 待基线建立后回填。基线建立前导入的录音此前
+	// 调型为 unknown，核验为可用时此处补齐，避免后续证据缺调型信息。
+	if to == model.SegUsable {
+		sp, err := s.store.GetSpeaker(seg.SpeakerID)
+		if err == nil && sp.HasBaseline {
+			samples, err := s.store.ListF0(id)
+			if err == nil {
+				tt := toneTypeOfSamples(samples, sp.HasBaseline, sp.BaselineLog)
+				_ = s.store.SetSegmentToneType(id, tt)
+			}
+		}
+	}
+	return nil
 }
 
 // AddF0 向片段追加基频采样（时间须晚于既有最大时间，保证单调）。

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"task252-tonereview/internal/capture"
+	"task252-tonereview/internal/normalize"
 	"task252-tonereview/internal/store"
 )
 
@@ -147,6 +148,59 @@ func TestServiceFullLoop(t *testing.T) {
 	// 封存批次应拒绝后续修改。
 	if _, err := svc.ImportSegment(bid, segInput(spA.ID, "fp-x", 200, 200)); err == nil {
 		t.Fatalf("expected sealed batch to reject import")
+	}
+}
+
+// TestVerifyBackfillsToneAfterBaseline 验证修复：说话人基线建立前导入的片段
+// 调型为 unknown；待基线由其他可用片段建立后，将其核验为可用时应立即完成
+// 调型分类，而非保留 unknown，避免后续证据缺调型信息。
+func TestVerifyBackfillsToneAfterBaseline(t *testing.T) {
+	st, _ := store.Open(":memory:")
+	defer st.Close()
+	svc := New(st)
+	sp, _ := svc.CreateSpeaker("sp", "d", "f", 1950)
+	batch, _ := svc.CreateBatch("b", "t")
+
+	// 基线建立前导入：调型必为 unknown。
+	segPre, err := svc.ImportSegment(batch.ID, segInput(sp.ID, "fp-pre", 150, 220))
+	if err != nil {
+		t.Fatalf("import pre: %v", err)
+	}
+	if segPre.ToneType != "unknown" {
+		t.Fatalf("pre-baseline segment tone should be unknown, got %q", segPre.ToneType)
+	}
+
+	// 用足够多的其他片段建立说话人基线。
+	for i := 0; i < normalize.MinBaselineSamples; i++ {
+		fp := "fp-base-" + string(rune('a'+i))
+		seg, err := svc.ImportSegment(batch.ID, segInput(sp.ID, fp, 200, 200))
+		if err != nil {
+			t.Fatalf("import base %d: %v", i, err)
+		}
+		if err := svc.VerifySegment(seg.ID); err != nil {
+			t.Fatalf("verify base %d: %v", i, err)
+		}
+	}
+	if err := svc.RecomputeBaseline(sp.ID); err != nil {
+		t.Fatalf("recompute baseline: %v", err)
+	}
+
+	// 基线已建立，但 pre-baseline 片段仍为 pending，调型仍未回填。
+	gotPre, _ := svc.GetSegment(segPre.ID)
+	if gotPre.ToneType != "unknown" {
+		t.Fatalf("pending segment tone should still be unknown, got %q", gotPre.ToneType)
+	}
+
+	// 关键修复点：核验为可用时应立即分类调型（升调 150→220）。
+	if err := svc.VerifySegment(segPre.ID); err != nil {
+		t.Fatalf("verify pre: %v", err)
+	}
+	gotPre, _ = svc.GetSegment(segPre.ID)
+	if gotPre.ToneType == "" || gotPre.ToneType == "unknown" {
+		t.Fatalf("expected classified tone after verify, got %q", gotPre.ToneType)
+	}
+	if gotPre.ToneType != "rising" {
+		t.Fatalf("expected rising tone, got %q", gotPre.ToneType)
 	}
 }
 
