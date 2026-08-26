@@ -148,6 +148,21 @@ func TestServiceFullLoop(t *testing.T) {
 	if _, err := svc.ImportSegment(bid, segInput(spA.ID, "fp-x", 200, 200)); err == nil {
 		t.Fatalf("expected sealed batch to reject import")
 	}
+
+	// 封存批次关联的说话人基线重算必须被拒绝，现有调型与基线保持不变。
+	spA0, _ := svc.GetSpeaker(spA.ID)
+	ga0, _ := svc.GetSegment(segA1.ID)
+	if err := svc.RecomputeBaseline(spA.ID); err == nil {
+		t.Fatalf("expected sealed-baseline recompute to be rejected")
+	}
+	spA1, _ := svc.GetSpeaker(spA.ID)
+	ga1, _ := svc.GetSegment(segA1.ID)
+	if spA1.BaselineLog != spA0.BaselineLog || spA1.HasBaseline != spA0.HasBaseline {
+		t.Fatalf("baseline changed after sealed recompute: %+v -> %+v", spA0, spA1)
+	}
+	if ga1.ToneType != ga0.ToneType {
+		t.Fatalf("segment tone type changed after sealed recompute: %q -> %q", ga0.ToneType, ga1.ToneType)
+	}
 }
 
 func TestSegmentStateGuard(t *testing.T) {

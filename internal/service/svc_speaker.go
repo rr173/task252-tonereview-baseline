@@ -36,10 +36,20 @@ func (s *Service) ListSpeakers() ([]*model.Speaker, error) {
 
 // RecomputeBaseline 由说话人全部可用片段的可靠基频重算基线，
 // 并回填空基线片段的调型分类。
+//
+// 说话人基线为全局单值，一旦说话人的片段进入已封存批次，
+// 其基线与片段调型即成为已冻结复核证据的组成部分，重算会改写这些证据。
+// 因此封存批次关联的基线重算必须被拒绝，现有数据保持不变。
 func (s *Service) RecomputeBaseline(speakerID string) error {
 	sp, err := s.store.GetSpeaker(speakerID)
 	if err != nil {
 		return err
+	}
+	// 封存守卫：说话人若参与任何已封存批次，重算即会改写冻结证据，拒绝之。
+	if sealed, err := s.store.SpeakerInSealedBatch(speakerID); err != nil {
+		return err
+	} else if sealed {
+		return model.ErrSealed
 	}
 	segIDs, err := s.store.ListUsableSegmentsBySpeaker(speakerID)
 	if err != nil {

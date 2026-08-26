@@ -87,6 +87,22 @@ func (s *Store) ListUsableSegmentsBySpeaker(speakerID string) ([]string, error) 
 	return out, rows.Err()
 }
 
+// SpeakerInSealedBatch 报告说话人是否有片段属于已封存的批次。
+// 说话人基线为全局单值，一旦参与封存批次的证据即视为冻结证据的一部分；
+// 重算会改写这些片段的调型，故须在 service 层拒绝以保持现有数据不变。
+func (s *Store) SpeakerInSealedBatch(speakerID string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM segments seg
+		 JOIN batches b ON b.id = seg.batch_id
+		 WHERE seg.speaker_id=? AND b.status=?`,
+		speakerID, model.BatchSealed).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1
